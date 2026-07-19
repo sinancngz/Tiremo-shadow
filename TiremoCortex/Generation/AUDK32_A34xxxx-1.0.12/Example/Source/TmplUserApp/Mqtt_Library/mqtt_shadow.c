@@ -1,6 +1,12 @@
 /**
  * @file    mqtt_shadow.c
- * @brief   AWS IoT classic Device Shadow over ESP-AT MQTT
+ * @brief   AWS IoT classic Device Shadow over ESP-AT (shadow.txt / AWS rules)
+ *
+ * Device:
+ *   1) Subscribe update/delta + get/accepted
+ *   2) GET shadow on connect / idle
+ *   3) Deliver each MQTT payload to app (app applies delta / restores reported)
+ *   4) App publishes reported after applying delta
  */
 
 #include "../Config/project_config.h"
@@ -26,7 +32,7 @@ static char s_payload[SHADOW_PAYLOAD_MAX];
 int MqttShadow_ExtractString(const char *json, const char *key,
                              char *out, uint16_t outMax)
 {
-    char pattern[64];
+    char keyPat[48];
     const char *p;
     uint16_t oi = 0U;
 
@@ -35,13 +41,31 @@ int MqttShadow_ExtractString(const char *json, const char *key,
         return -1;
     }
 
-    snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
-    p = strstr(json, pattern);
+    snprintf(keyPat, sizeof(keyPat), "\"%s\"", key);
+    p = strstr(json, keyPat);
     if (p == NULL)
     {
         return -1;
     }
-    p += strlen(pattern);
+    p += strlen(keyPat);
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p != ':')
+    {
+        return -1;
+    }
+    p++;
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p != '"')
+    {
+        return -1;
+    }
+    p++;
 
     while ((*p != '\0') && (oi < (outMax - 1U)))
     {
@@ -72,7 +96,7 @@ int MqttShadow_ExtractString(const char *json, const char *key,
 
 int MqttShadow_ExtractInt(const char *json, const char *key, int32_t *out)
 {
-    char pattern[64];
+    char keyPat[48];
     const char *p;
     int32_t sign = 1;
     int32_t val = 0;
@@ -83,13 +107,22 @@ int MqttShadow_ExtractInt(const char *json, const char *key, int32_t *out)
         return -1;
     }
 
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    p = strstr(json, pattern);
+    snprintf(keyPat, sizeof(keyPat), "\"%s\"", key);
+    p = strstr(json, keyPat);
     if (p == NULL)
     {
         return -1;
     }
-    p += strlen(pattern);
+    p += strlen(keyPat);
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p != ':')
+    {
+        return -1;
+    }
+    p++;
     while ((*p == ' ') || (*p == '\t'))
     {
         p++;
@@ -115,7 +148,7 @@ int MqttShadow_ExtractInt(const char *json, const char *key, int32_t *out)
 
 int MqttShadow_ExtractBool(const char *json, const char *key, uint8_t *out)
 {
-    char pattern[64];
+    char keyPat[48];
     const char *p;
 
     if ((json == NULL) || (key == NULL) || (out == NULL))
@@ -123,18 +156,30 @@ int MqttShadow_ExtractBool(const char *json, const char *key, uint8_t *out)
         return -1;
     }
 
-    snprintf(pattern, sizeof(pattern), "\"%s\":", key);
-    p = strstr(json, pattern);
+    snprintf(keyPat, sizeof(keyPat), "\"%s\"", key);
+    p = strstr(json, keyPat);
     if (p == NULL)
     {
         return -1;
     }
-    p += strlen(pattern);
-    while ((*p == ' ') || (*p == '\t'))
+    p += strlen(keyPat);
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
     {
         p++;
     }
-
+    if (*p != ':')
+    {
+        return -1;
+    }
+    p++;
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p == '"')
+    {
+        p++;
+    }
     if (strncmp(p, "true", 4) == 0)
     {
         *out = 1U;
@@ -160,7 +205,7 @@ int MqttShadow_ExtractBool(const char *json, const char *key, uint8_t *out)
 
 const char *MqttShadow_FindObject(const char *json, const char *key)
 {
-    char pattern[64];
+    char keyPat[48];
     const char *p;
 
     if ((json == NULL) || (key == NULL))
@@ -168,236 +213,35 @@ const char *MqttShadow_FindObject(const char *json, const char *key)
         return NULL;
     }
 
-    snprintf(pattern, sizeof(pattern), "\"%s\":{", key);
-    p = strstr(json, pattern);
+    snprintf(keyPat, sizeof(keyPat), "\"%s\"", key);
+    p = strstr(json, keyPat);
     if (p == NULL)
     {
-        /* allow whitespace: "key" : { */
-        snprintf(pattern, sizeof(pattern), "\"%s\"", key);
-        p = strstr(json, pattern);
-        if (p == NULL)
-        {
-            return NULL;
-        }
-        p += strlen(pattern);
-        while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n') || (*p == ':'))
-        {
-            p++;
-        }
-        if (*p != '{')
-        {
-            return NULL;
-        }
-        return p;
+        return NULL;
     }
-    return p + strlen(pattern) - 1U; /* point at '{' */
+    p += strlen(keyPat);
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p != ':')
+    {
+        return NULL;
+    }
+    p++;
+    while ((*p == ' ') || (*p == '\t') || (*p == '\r') || (*p == '\n'))
+    {
+        p++;
+    }
+    if (*p != '{')
+    {
+        return NULL;
+    }
+    return p;
 }
 
-/* ---- UART SUBRECV collect ---------------------------------------------- */
+/* ---- UART -------------------------------------------------------------- */
 
-static uint16_t shadow_extract_payloads(const char *raw, uint16_t rawLen,
-                                        char *out, uint16_t outMax)
-{
-    uint16_t i = 0U;
-    uint16_t assembled = 0U;
-
-    if ((raw == NULL) || (out == NULL) || (outMax < 2U))
-    {
-        return 0U;
-    }
-    out[0] = '\0';
-
-    while ((i + 13U) < rawLen)
-    {
-        const char *hit = strstr(&raw[i], "+MQTTSUBRECV:");
-        const char *p;
-        unsigned len = 0U;
-        uint16_t pi;
-        unsigned k;
-
-        if (hit == NULL)
-        {
-            break;
-        }
-        i = (uint16_t)(hit - raw);
-        p = &raw[i] + 13;
-
-        while ((p < (raw + rawLen)) && (*p != ','))
-        {
-            p++;
-        }
-        if ((p >= (raw + rawLen)) || (*p != ','))
-        {
-            break;
-        }
-        p++;
-        if (*p != '"')
-        {
-            i = (uint16_t)(p - raw);
-            continue;
-        }
-        p++;
-        while ((p < (raw + rawLen)) && (*p != '"'))
-        {
-            p++;
-        }
-        if ((p >= (raw + rawLen)) || (*p != '"'))
-        {
-            break;
-        }
-        p++;
-        if (*p != ',')
-        {
-            i = (uint16_t)(p - raw);
-            continue;
-        }
-        p++;
-
-        len = 0U;
-        while ((p < (raw + rawLen)) && (*p >= '0') && (*p <= '9'))
-        {
-            len = (len * 10U) + (unsigned)(*p - '0');
-            p++;
-        }
-        if ((p >= (raw + rawLen)) || (*p != ',') || (len == 0U))
-        {
-            i = (uint16_t)(p - raw);
-            continue;
-        }
-        p++;
-
-        pi = (uint16_t)(p - raw);
-        if (((uint32_t)pi + (uint32_t)len) > (uint32_t)rawLen)
-        {
-            break;
-        }
-
-        if (assembled > 0U)
-        {
-            /* Separate multiple frames with a sentinel newline for handlers. */
-            if ((assembled + 1U) < outMax)
-            {
-                out[assembled++] = '\n';
-                out[assembled] = '\0';
-            }
-        }
-
-        for (k = 0U; k < len; k++)
-        {
-            if ((assembled + 1U) < outMax)
-            {
-                out[assembled++] = raw[pi + (uint16_t)k];
-                out[assembled] = '\0';
-            }
-        }
-        i = (uint16_t)(pi + len);
-    }
-
-    return assembled;
-}
-
-/* ---- Public API -------------------------------------------------------- */
-
-int MqttShadow_Subscribe(char *buffer, uint16_t bufSize)
-{
-    (void)bufSize;
-
-    if (buffer == NULL)
-    {
-        return -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Subscribe delta...");
-    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_DELTA, 1, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] Sub delta FAILED");
-        return -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Subscribe get/accepted...");
-    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_GET_ACCEPTED, 1, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] Sub get/accepted FAILED");
-        return -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Subscribe update/accepted...");
-    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_UPD_ACCEPTED, 1, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] WARN: Sub update/accepted failed");
-    }
-
-    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_GET_REJECTED, 1, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] WARN: Sub get/rejected failed");
-    }
-
-    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_UPD_REJECTED, 1, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] WARN: Sub update/rejected failed");
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Subscriptions OK");
-    return 0;
-}
-
-int MqttShadow_RequestGet(char *buffer, uint16_t bufSize)
-{
-    (void)bufSize;
-
-    if (buffer == NULL)
-    {
-        return -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Request GET...");
-    if (Wifi_MqttPubRaw2(buffer, (char *)MQTT_SHADOW_TOPIC_GET,
-                         2U, "{}", QOS_1, RTN_0, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] GET publish failed");
-        return -1;
-    }
-    return 0;
-}
-
-int MqttShadow_PublishReported(char *buffer, uint16_t bufSize,
-                               const char *reportedBody)
-{
-    char envelope[768];
-    int n;
-
-    if ((buffer == NULL) || (reportedBody == NULL) || (bufSize < 128U))
-    {
-        return -1;
-    }
-
-    n = snprintf(envelope, sizeof(envelope),
-                 "{\"state\":{\"reported\":%s}}", reportedBody);
-    if ((n <= 0) || (n >= (int)sizeof(envelope)))
-    {
-        DebugFramework_PutsLine("[SHADOW] reported JSON too large");
-        return -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] Publish reported...");
-    if (Wifi_MqttPubRaw2(buffer, (char *)MQTT_SHADOW_TOPIC_UPDATE,
-                         (uint16_t)strlen(envelope), envelope,
-                         QOS_1, RTN_0, POLLING_MODE) != FUNC_OK)
-    {
-        DebugFramework_PutsLine("[SHADOW] reported publish failed");
-        return -1;
-    }
-    return 0;
-}
-
-/* ---- UART SUBRECV collect ---------------------------------------------- */
-
-/**
- * Continuous UART collect for windowMs.
- * Once +MQTTSUBRECV is seen, keep reading until silence
- * (MQTT_SHADOW_SUBRECV_SILENCE_MS) or hard deadline (windowMs + extra).
- * Do NOT use a short silence — that truncates large shadow JSON.
- */
 static uint16_t shadow_slurp(char *raw, uint16_t rawMax, uint32_t windowMs)
 {
     const MqttPort_Interface *port = MqttPort_Get();
@@ -440,7 +284,6 @@ static uint16_t shadow_slurp(char *raw, uint16_t rawMax, uint32_t windowMs)
                     if (s_tag[matchIdx] == '\0')
                     {
                         sawSub = 1U;
-                        /* Allow enough time to finish a large SUBRECV body. */
                         {
                             uint32_t elapsed = port->get_tick_ms() - t0;
                             uint32_t need = elapsed + 4000U;
@@ -472,111 +315,365 @@ static uint16_t shadow_slurp(char *raw, uint16_t rawMax, uint32_t windowMs)
     return n;
 }
 
-static int shadow_dispatch_payload(int (*onDeltaJson)(const char *json, void *user),
-                                   void *user)
-{
-    const char *deltaNested;
-    const char *stateObj;
-    const char *desiredObj;
-    int rc;
-
-    deltaNested = MqttShadow_FindObject(s_payload, "delta");
-    if (deltaNested != NULL)
-    {
-        DebugFramework_PutsLine("[SHADOW] apply: delta object");
-        rc = onDeltaJson(deltaNested, user);
-        return (rc == 0) ? 1 : -1;
-    }
-
-    stateObj = MqttShadow_FindObject(s_payload, "state");
-    if (stateObj == NULL)
-    {
-        DebugFramework_PutsLine("[SHADOW] no state object — ignore");
-        return 0;
-    }
-
-    if ((MqttShadow_FindObject(stateObj, "desired") == NULL) &&
-        (MqttShadow_FindObject(stateObj, "reported") == NULL) &&
-        (MqttShadow_FindObject(stateObj, "delta") == NULL))
-    {
-        DebugFramework_PutsLine("[SHADOW] apply: update/delta state");
-        rc = onDeltaJson(stateObj, user);
-        return (rc == 0) ? 1 : -1;
-    }
-
-    desiredObj = MqttShadow_FindObject(stateObj, "desired");
-    if (desiredObj != NULL)
-    {
-        DebugFramework_PutsLine("[SHADOW] apply: desired fallback");
-        rc = onDeltaJson(desiredObj, user);
-        return (rc == 0) ? 1 : -1;
-    }
-
-    DebugFramework_PutsLine("[SHADOW] no delta/desired — ignore");
-    return 0;
-}
-
 static int shadow_poll_internal(uint32_t windowMs,
-                                int (*onDeltaJson)(const char *json, void *user),
+                                int (*onJson)(const char *json, void *user),
                                 void *user)
 {
     uint16_t rawLen;
-    uint16_t payloadLen;
+    uint16_t i;
+    int handled = 0;
 
-    if (onDeltaJson == NULL)
+    if (onJson == NULL)
     {
         return -1;
     }
 
     rawLen = shadow_slurp(s_raw, (uint16_t)sizeof(s_raw), windowMs);
-    if (rawLen == 0U)
+    if ((rawLen == 0U) || (strstr(s_raw, "+MQTTSUBRECV:") == NULL))
     {
         return 0;
     }
 
-    if (strstr(s_raw, "+MQTTSUBRECV:") == NULL)
+    /* One MQTT message per SUBRECV — handle separately. */
+    i = 0U;
+    while ((i + 13U) < rawLen)
     {
-        return 0;
-    }
+        const char *hit = strstr(&s_raw[i], "+MQTTSUBRECV:");
+        const char *p;
+        unsigned len = 0U;
+        uint16_t pi;
+        unsigned k;
+        uint16_t payloadLen;
 
-    payloadLen = shadow_extract_payloads(s_raw, rawLen, s_payload,
-                                         (uint16_t)sizeof(s_payload));
-    if (payloadLen == 0U)
-    {
-        DebugFramework_Printf("[SHADOW] SUBRECV seen but parse fail raw=%u\n\r",
-                              (unsigned)rawLen);
-        return 0;
-    }
-
-    DebugFramework_Printf("[SHADOW] RX payload=%u raw=%u\n\r",
-                          (unsigned)payloadLen, (unsigned)rawLen);
-    {
-        char preview[97];
-        uint16_t i;
-        uint16_t n = (payloadLen > 96U) ? 96U : payloadLen;
-        for (i = 0U; i < n; i++)
+        if (hit == NULL)
         {
-            char c = s_payload[i];
-            preview[i] = ((c >= 32) && (c < 127)) ? c : '.';
+            break;
         }
-        preview[n] = '\0';
-        DebugFramework_PutsLine(preview);
+        i = (uint16_t)(hit - s_raw);
+        p = &s_raw[i] + 13;
+
+        while ((p < (s_raw + rawLen)) && (*p != ','))
+        {
+            p++;
+        }
+        if ((p >= (s_raw + rawLen)) || (*p != ','))
+        {
+            break;
+        }
+        p++;
+        if (*p != '"')
+        {
+            i = (uint16_t)(p - s_raw);
+            continue;
+        }
+        p++;
+        while ((p < (s_raw + rawLen)) && (*p != '"'))
+        {
+            p++;
+        }
+        if ((p >= (s_raw + rawLen)) || (*p != '"'))
+        {
+            break;
+        }
+        p++;
+        if (*p != ',')
+        {
+            i = (uint16_t)(p - s_raw);
+            continue;
+        }
+        p++;
+
+        len = 0U;
+        while ((p < (s_raw + rawLen)) && (*p >= '0') && (*p <= '9'))
+        {
+            len = (len * 10U) + (unsigned)(*p - '0');
+            p++;
+        }
+        if ((p >= (s_raw + rawLen)) || (*p != ',') || (len == 0U))
+        {
+            i = (uint16_t)(p - s_raw);
+            continue;
+        }
+        p++;
+
+        pi = (uint16_t)(p - s_raw);
+        if (((uint32_t)pi + (uint32_t)len) > (uint32_t)rawLen)
+        {
+            DebugFramework_Printf("[SHADOW] incomplete need=%u have=%u\n\r",
+                                  (unsigned)len, (unsigned)(rawLen - pi));
+            break;
+        }
+
+        payloadLen = 0U;
+        memset(s_payload, 0, sizeof(s_payload));
+        for (k = 0U; k < len; k++)
+        {
+            if ((payloadLen + 1U) < (uint16_t)sizeof(s_payload))
+            {
+                s_payload[payloadLen++] = s_raw[pi + (uint16_t)k];
+                s_payload[payloadLen] = '\0';
+            }
+        }
+
+        DebugFramework_Printf("[SHADOW] RX len=%u\n\r", (unsigned)payloadLen);
+        {
+            char preview[81];
+            uint16_t n = (payloadLen > 80U) ? 80U : payloadLen;
+            uint16_t j;
+            for (j = 0U; j < n; j++)
+            {
+                char c = s_payload[j];
+                preview[j] = ((c >= 32) && (c < 127)) ? c : '.';
+            }
+            preview[n] = '\0';
+            DebugFramework_PutsLine(preview);
+        }
+
+        if (onJson(s_payload, user) == 0)
+        {
+            handled = 1;
+        }
+
+        i = (uint16_t)(pi + len);
     }
 
-    return shadow_dispatch_payload(onDeltaJson, user);
+    return handled;
+}
+
+/* ---- Public API -------------------------------------------------------- */
+
+/**
+ * Drain a few ms of UART junk before TX.
+ */
+static void shadow_uart_drain(uint32_t ms)
+{
+    const MqttPort_Interface *port = MqttPort_Get();
+    uint32_t t0;
+
+    if (port == NULL)
+    {
+        return;
+    }
+    t0 = port->get_tick_ms();
+    while ((port->get_tick_ms() - t0) < ms)
+    {
+        uint8_t b;
+        (void)port->uart_receive(&b, 1U, 5U);
+    }
+}
+
+/**
+ * Escape " and \ for AT+MQTTPUB="..." data field (fleet-style).
+ */
+static int shadow_escape_at_string(const char *in, char *out, uint16_t outMax)
+{
+    uint16_t oi = 0U;
+
+    if ((in == NULL) || (out == NULL) || (outMax < 2U))
+    {
+        return -1;
+    }
+
+    while (*in != '\0')
+    {
+        if (((*in == '"') || (*in == '\\')) && ((oi + 2U) < outMax))
+        {
+            out[oi++] = '\\';
+            out[oi++] = *in;
+        }
+        else if ((oi + 1U) < outMax)
+        {
+            out[oi++] = *in;
+        }
+        else
+        {
+            return -1;
+        }
+        in++;
+    }
+    out[oi] = '\0';
+    return 0;
+}
+
+/**
+ * Small JSON publish via AT+MQTTPUB (no '>' — custom PUBRAW was failing).
+ */
+static int shadow_mqtt_pub_json(const char *topic, const char *json)
+{
+    char esc[160];
+    char cmd[360];
+    const MqttPort_Interface *port = MqttPort_Get();
+    uint32_t t0;
+    uint32_t lastRx;
+    uint16_t n = 0U;
+
+    if ((topic == NULL) || (json == NULL) || (port == NULL))
+    {
+        return -1;
+    }
+    if (shadow_escape_at_string(json, esc, (uint16_t)sizeof(esc)) != 0)
+    {
+        return -1;
+    }
+
+    shadow_uart_drain(50U);
+    snprintf(cmd, sizeof(cmd),
+             "AT+MQTTPUB=0,\"%s\",\"%s\",1,0\r\n", topic, esc);
+    if (Wifi_SendCommand(cmd) != MQTT_PORT_OK)
+    {
+        return -1;
+    }
+
+    /* Collect short AT response (OK / ERROR), stop early on silence after RX */
+    memset(s_raw, 0, sizeof(s_raw));
+    t0 = port->get_tick_ms();
+    lastRx = t0;
+    while ((port->get_tick_ms() - t0) < 2500U)
+    {
+        uint8_t b;
+        if (port->uart_receive(&b, 1U, 5U) == MQTT_PORT_OK)
+        {
+            if ((n + 1U) < (uint16_t)sizeof(s_raw))
+            {
+                s_raw[n++] = (char)b;
+                s_raw[n] = '\0';
+            }
+            lastRx = port->get_tick_ms();
+            if ((strstr(s_raw, "ERROR") != NULL) ||
+                (strstr(s_raw, "OK\r\n") != NULL) ||
+                (strstr(s_raw, "OK\n") != NULL))
+            {
+                /* brief extra for late chars */
+                if ((port->get_tick_ms() - lastRx) >= 30U)
+                {
+                    break;
+                }
+            }
+            continue;
+        }
+        if ((n > 0U) && ((port->get_tick_ms() - lastRx) >= 80U))
+        {
+            break;
+        }
+    }
+
+    if (n == 0U)
+    {
+        DebugFramework_PutsLine("[SHADOW] MQTTPUB empty RX");
+        return -1;
+    }
+    if (strstr(s_raw, "ERROR") != NULL)
+    {
+        DebugFramework_PutsLine("[SHADOW] MQTTPUB ERROR");
+        return -1;
+    }
+    if (strstr(s_raw, "OK") == NULL)
+    {
+        DebugFramework_PutsLine("[SHADOW] MQTTPUB no OK");
+        return -1;
+    }
+    return 0;
+}
+
+int MqttShadow_Subscribe(char *buffer, uint16_t bufSize)
+{
+    (void)bufSize;
+
+    if (buffer == NULL)
+    {
+        return -1;
+    }
+
+    DebugFramework_PutsLine("[SHADOW] Sub update/delta...");
+    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_DELTA, 1, POLLING_MODE) != FUNC_OK)
+    {
+        DebugFramework_PutsLine("[SHADOW] Sub delta FAILED");
+        return -1;
+    }
+
+    DebugFramework_PutsLine("[SHADOW] Sub get/accepted...");
+    if (Wifi_MqttSub2(buffer, MQTT_SHADOW_TOPIC_GET_ACCEPTED, 1, POLLING_MODE) != FUNC_OK)
+    {
+        DebugFramework_PutsLine("[SHADOW] Sub get/accepted FAILED");
+        return -1;
+    }
+
+    DebugFramework_PutsLine("[SHADOW] Subs OK");
+    return 0;
+}
+
+int MqttShadow_RequestGet(char *buffer, uint16_t bufSize)
+{
+    char cmd[220];
+
+    (void)bufSize;
+    if (buffer == NULL)
+    {
+        return -1;
+    }
+
+    /*
+     * Small payload → AT+MQTTPUB. Do NOT call Wifi_Receive afterward:
+     * get/accepted SUBRECV arrives in the same window as OK and must be
+     * collected by PollWindow/slurp (fleet-style).
+     */
+    DebugFramework_PutsLine("[SHADOW] GET shadow...");
+    shadow_uart_drain(30U);
+    snprintf(cmd, sizeof(cmd),
+             "AT+MQTTPUB=0,\"%s\",\"{}\",1,0\r\n", MQTT_SHADOW_TOPIC_GET);
+    if (Wifi_SendCommand(cmd) != MQTT_PORT_OK)
+    {
+        DebugFramework_PutsLine("[SHADOW] GET TX failed");
+        return -1;
+    }
+    return 0;
+}
+
+int MqttShadow_PublishReported(char *buffer, uint16_t bufSize,
+                               const char *reportedBody)
+{
+    char envelope[128];
+    int n;
+
+    if ((buffer == NULL) || (reportedBody == NULL) || (bufSize < 128U))
+    {
+        return -1;
+    }
+
+    n = snprintf(envelope, sizeof(envelope),
+                 "{\"state\":{\"reported\":%s}}", reportedBody);
+    if ((n <= 0) || (n >= (int)sizeof(envelope)))
+    {
+        return -1;
+    }
+
+    DebugFramework_PutsLine("[SHADOW] Publish reported...");
+    if (shadow_mqtt_pub_json(MQTT_SHADOW_TOPIC_UPDATE, envelope) != 0)
+    {
+        /* Fallback: telemetry path (Wifi_MqttPubRaw2) — proven on this board */
+        DebugFramework_PutsLine("[SHADOW] MQTTPUB failed — try PUBRAW2");
+        if (Wifi_MqttPubRaw2(buffer, (char *)MQTT_SHADOW_TOPIC_UPDATE,
+                             (uint16_t)strlen(envelope), envelope,
+                             QOS_1, RTN_0, POLLING_MODE) != FUNC_OK)
+        {
+            DebugFramework_PutsLine("[SHADOW] reported TX failed");
+            return -1;
+        }
+    }
+    return 0;
 }
 
 int MqttShadow_Poll(char *buffer, uint16_t bufSize,
-                    int (*onDeltaJson)(const char *json, void *user),
+                    int (*onJson)(const char *json, void *user),
                     void *user)
 {
     (void)buffer;
     (void)bufSize;
-    return shadow_poll_internal(MQTT_SHADOW_POLL_MS, onDeltaJson, user);
+    return shadow_poll_internal(MQTT_SHADOW_POLL_MS, onJson, user);
 }
 
 int MqttShadow_PollWindow(char *buffer, uint16_t bufSize, uint32_t windowMs,
-                          int (*onDeltaJson)(const char *json, void *user),
+                          int (*onJson)(const char *json, void *user),
                           void *user)
 {
     (void)buffer;
@@ -585,7 +682,7 @@ int MqttShadow_PollWindow(char *buffer, uint16_t bufSize, uint32_t windowMs,
     {
         windowMs = 100U;
     }
-    return shadow_poll_internal(windowMs, onDeltaJson, user);
+    return shadow_poll_internal(windowMs, onJson, user);
 }
 
 #endif /* EMPA_ESP32_MQTT_AWS && MQTT_SHADOW_ENABLE */

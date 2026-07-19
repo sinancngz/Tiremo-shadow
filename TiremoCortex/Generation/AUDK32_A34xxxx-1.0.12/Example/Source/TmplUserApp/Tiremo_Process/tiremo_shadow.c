@@ -1,9 +1,13 @@
 /**
  * @file    tiremo_shadow.c
- * @brief   Apply AWS Shadow delta: lightState → all LEDs, then report
+ * @brief   Device Shadow — lightState on/off (shadow.txt / AWS rules)
  *
- * RX is polling (not IRQ). Must keep draining ESP32 UART between publishes
- * or +MQTTSUBRECV frames are lost during DelayMs.
+ * Log analysis: device DID apply one update/delta (lightState:false) and
+ * published reported. If desired stays true, AWS creates a NEW delta(true)
+ * that must be caught AFTER reported publish — previously that push was lost.
+ *
+ * Also: GET responses often arrive during PubRaw AT exchange; we retry GET
+ * and always listen immediately after get/reported.
  */
 
 #include "../Config/project_config.h"
@@ -20,25 +24,26 @@
 #include <string.h>
 
 static TiremoShadowState_t s_state;
-static uint8_t s_dirty; /* report after successful delta apply */
+static uint8_t s_dirty;
+static uint8_t s_gotDoc; /* 1 if any shadow JSON handled in last listen */
 
 static void shadow_apply_light(void)
 {
     if (s_state.lightState != 0U)
     {
         TIREMO_LED_AllOn();
-        DebugFramework_PutsLine("[SHADOW] lightState=true → ALL LEDs ON");
+        DebugFramework_PutsLine("[SHADOW] LEDs ON (lightState=true)");
     }
     else
     {
         TIREMO_LED_AllOff();
-        DebugFramework_PutsLine("[SHADOW] lightState=false → ALL LEDs OFF");
+        DebugFramework_PutsLine("[SHADOW] LEDs OFF (lightState=false)");
     }
 }
 
 static int shadow_publish_reported(char *buffer, uint16_t bufSize)
 {
-    char body[48];
+    char body[40];
 
     snprintf(body, sizeof(body),
              "{\"lightState\":%s}",
@@ -49,39 +54,107 @@ static int shadow_publish_reported(char *buffer, uint16_t bufSize)
         return -1;
     }
     s_dirty = 0U;
+    DebugFramework_PutsLine("[SHADOW] reported published");
     return 0;
 }
 
-static int shadow_apply_delta(const char *deltaJson)
+static int shadow_on_document(const char *json, void *user)
 {
+    const char *deltaMark;
+    const char *stateObj;
+    const char *reportedMark;
     uint8_t light = 0U;
 
-    if (deltaJson == NULL)
+    (void)user;
+    if (json == NULL)
     {
-        return 0;
+        return -1;
     }
 
-    DebugFramework_PutsLine("[SHADOW] Applying lightState...");
+    s_gotDoc = 1U;
 
-    if (MqttShadow_ExtractBool(deltaJson, "lightState", &light) != 0)
+    /* 1) Full document with AWS delta section */
+    deltaMark = strstr(json, "\"delta\"");
+    if (deltaMark != NULL)
     {
-        /* Some payloads nest again or use quoted bool — try full-buffer search. */
-        DebugFramework_PutsLine("[SHADOW] lightState not in object — scan ignore");
-        return 0;
+        if (MqttShadow_ExtractBool(deltaMark, "lightState", &light) == 0)
+        {
+            DebugFramework_Printf("[SHADOW] DELTA apply lightState=%u\n\r",
+                                  (unsigned)light);
+            s_state.lightState = light;
+            shadow_apply_light();
+            s_dirty = 1U;
+            return 0;
+        }
     }
 
-    /* Always drive LEDs (even if value unchanged — recovers after LED test). */
-    s_state.lightState = light;
-    shadow_apply_light();
-    s_dirty = 1U;
-    return 1;
+    /* 2) Push on .../shadow/update/delta : state holds only changed fields */
+    stateObj = MqttShadow_FindObject(json, "state");
+    if (stateObj != NULL)
+    {
+        if ((strstr(stateObj, "\"desired\"") == NULL) &&
+            (strstr(stateObj, "\"reported\"") == NULL) &&
+            (strstr(stateObj, "\"delta\"") == NULL))
+        {
+            if (MqttShadow_ExtractBool(stateObj, "lightState", &light) == 0)
+            {
+                DebugFramework_Printf("[SHADOW] update/delta apply lightState=%u\n\r",
+                                      (unsigned)light);
+                s_state.lightState = light;
+                shadow_apply_light();
+                s_dirty = 1U;
+                return 0;
+            }
+        }
+    }
+
+    /* 3) No delta — restore last confirmed reported (reboot) */
+    reportedMark = strstr(json, "\"reported\"");
+    if (reportedMark != NULL)
+    {
+        if (MqttShadow_ExtractBool(reportedMark, "lightState", &light) == 0)
+        {
+            DebugFramework_Printf("[SHADOW] restore reported lightState=%u\n\r",
+                                  (unsigned)light);
+            s_state.lightState = light;
+            shadow_apply_light();
+            return 0;
+        }
+    }
+
+    DebugFramework_PutsLine("[SHADOW] doc ignored");
+    return 0;
 }
 
-static int shadow_on_delta(const char *deltaJson, void *user)
+/**
+ * Listen, apply, publish reported, then listen AGAIN —
+ * publishing reported can create a new AWS delta if desired still differs.
+ */
+static void shadow_sync_round(char *buffer, uint16_t bufSize, uint32_t listenMs)
 {
-    (void)user;
-    (void)shadow_apply_delta(deltaJson);
-    return 0;
+    uint8_t round;
+
+    for (round = 0U; round < 2U; round++)
+    {
+        s_gotDoc = 0U;
+        (void)MqttShadow_PollWindow(buffer, bufSize, listenMs, shadow_on_document, NULL);
+
+        if (s_dirty != 0U)
+        {
+            (void)shadow_publish_reported(buffer, bufSize);
+            /* Catch immediate follow-up delta from AWS */
+            listenMs = 3000U;
+            continue;
+        }
+        break;
+    }
+}
+
+static void shadow_get_and_sync(char *buffer, uint16_t bufSize, uint32_t listenMs)
+{
+    (void)MqttShadow_RequestGet(buffer, bufSize);
+    /* No DelayMs here — UART is polled only; idle delay drops get/accepted. */
+    shadow_sync_round(buffer, bufSize, listenMs);
 }
 
 void TiremoShadow_Init(void)
@@ -90,12 +163,15 @@ void TiremoShadow_Init(void)
     s_state.lightState = 0U;
     s_state.subscribed = 0U;
     s_dirty = 0U;
+    s_gotDoc = 0U;
     TIREMO_LED_AllOff();
-    DebugFramework_PutsLine("[SHADOW] Init OK (lightState → all LEDs)");
+    DebugFramework_PutsLine("[SHADOW] Init OK");
 }
 
 int TiremoShadow_OnConnected(char *buffer, uint16_t bufSize)
 {
+    uint8_t attempt;
+
     if ((buffer == NULL) || (bufSize < 256U))
     {
         return -1;
@@ -108,27 +184,21 @@ int TiremoShadow_OnConnected(char *buffer, uint16_t bufSize)
     }
     s_state.subscribed = 1U;
 
-    /* Fetch pending delta — one continuous listen (do not split SUBRECV). */
-    (void)MqttShadow_RequestGet(buffer, bufSize);
-    DebugFramework_PutsLine("[SHADOW] Waiting for get/delta...");
-    (void)MqttShadow_PollWindow(buffer, bufSize, MQTT_SHADOW_GET_WAIT_MS,
-                                shadow_on_delta, NULL);
-
-    if (s_dirty != 0U)
+    /* Retry GET — first response is often lost in AT TX/RX */
+    for (attempt = 0U; attempt < 3U; attempt++)
     {
-        if (shadow_publish_reported(buffer, bufSize) != 0)
+        DebugFramework_Printf("[SHADOW] sync attempt %u/3\n\r",
+                              (unsigned)(attempt + 1U));
+        s_gotDoc = 0U;
+        shadow_get_and_sync(buffer, bufSize, MQTT_SHADOW_GET_WAIT_MS);
+        if (s_gotDoc != 0U)
         {
-            DebugFramework_PutsLine("[SHADOW] WARN: reported after delta failed");
-            return -1;
+            break;
         }
-    }
-    else
-    {
-        DebugFramework_PutsLine("[SHADOW] no pending delta");
+        DebugFramework_PutsLine("[SHADOW] WARN: no shadow RX — retry GET");
     }
 
-    shadow_apply_light();
-    DebugFramework_PutsLine("[SHADOW] OnConnected complete (continuous UART listen)");
+    DebugFramework_PutsLine("[SHADOW] OnConnected done");
     return 0;
 }
 
@@ -138,38 +208,27 @@ void TiremoShadow_Poll(char *buffer, uint16_t bufSize)
     {
         return;
     }
-
-    (void)MqttShadow_Poll(buffer, bufSize, shadow_on_delta, NULL);
-
-    if (s_dirty != 0U)
-    {
-        (void)shadow_publish_reported(buffer, bufSize);
-    }
+    /* Opportunistic listen only (no GET) — catch push delta */
+    shadow_sync_round(buffer, bufSize, MQTT_SHADOW_POLL_MS);
 }
 
 void TiremoShadow_ServiceForMs(char *buffer, uint16_t bufSize, uint32_t durationMs)
 {
+    uint32_t listenMs;
+
     if ((buffer == NULL) || (s_state.subscribed == 0U))
     {
         TIREMO_SysTick_DelayMs(durationMs);
         return;
     }
 
-    /*
-     * ONE continuous listen — do not slice into short polls.
-     * Short polls were splitting +MQTTSUBRECV across windows → parse fail → "no RX".
-     */
-    if (durationMs < MQTT_SHADOW_POLL_MS)
+    listenMs = durationMs;
+    if (listenMs < 3000U)
     {
-        durationMs = MQTT_SHADOW_POLL_MS;
+        listenMs = 3000U;
     }
 
-    (void)MqttShadow_PollWindow(buffer, bufSize, durationMs, shadow_on_delta, NULL);
-
-    if (s_dirty != 0U)
-    {
-        (void)shadow_publish_reported(buffer, bufSize);
-    }
+    shadow_get_and_sync(buffer, bufSize, listenMs);
 }
 
 uint32_t TiremoShadow_GetPublishIntervalMs(void)

@@ -171,12 +171,10 @@ void TiremoApp_Run(void)
         /* Sensor-process mode already filled pData; still poll alarms for MQTT. */
         pendingAlarmCount = Sensor_PollAlarms(pData, pendingAlarms, SENSOR_ALARM_MAX_PER_CYCLE);
 #endif
+        /* Shadow sync BEFORE telemetry so GET/delta RX is not lost in PubRaw. */
+        TiremoAppNet_IdleService(mqttConnected, TiremoAppNet_GetPublishIntervalMs());
         TiremoAppNet_PublishCycle(pData, &mqttConnected, &mqtt_data_count);
         TiremoAppNet_PublishAlarms(pData, pendingAlarms, pendingAlarmCount, mqttConnected);
-#endif
-
-#if defined(EMPA_ESP32_MQTT_AWS)
-        TiremoAppNet_IdleService(mqttConnected, TiremoAppNet_GetPublishIntervalMs());
 #else
         TIREMO_SysTick_DelayMs(APP_PUBLISH_INTERVAL_MS);
 #endif
