@@ -773,7 +773,8 @@ FUNC_StatusTypeDef Wifi_MqttSub2(char *buffer, const char *topic, uint8_t qos, M
 {
     MqttPort_Status checkCmd;
     MqttPort_Status checkRcv;
-    char cmd[128] = {0};
+    /* Shadow topics are long: $aws/things/<serial>/shadow/... — keep headroom. */
+    char cmd[192] = {0};
 
     if ((buffer == NULL) || (topic == NULL))
     {

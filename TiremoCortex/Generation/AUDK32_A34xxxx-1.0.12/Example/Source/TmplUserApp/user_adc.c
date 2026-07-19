@@ -51,11 +51,6 @@ static void Init_ADC_ID_0(void)
         .bSleep = True,
     };
 
-    ADC_SEQ_TRG_CFG_t tSeqCfg =
-    {
-        .eType = ADC_TRG_TYPE_INDEPENDENT
-    };
-
     eErr = HAL_ADC_Init(ADC_ID_0);
     if (eErr != HAL_ERR_OK)
     {
@@ -75,18 +70,6 @@ static void Init_ADC_ID_0(void)
     }
 
     eErr = HAL_ADC_SetIRQ(ADC_ID_0, ADC_OPS_POLL, ADC_IRQHandler_ADC_ID_0, NULL, 3);
-    if (eErr != HAL_ERR_OK)
-    {
-        return;
-    }
-
-    /* ADC Sequence 0 */
-    tSeqCfg.eTrgSrc = ADC_TRG_SRC_TIMER1;
-    tSeqCfg.un8TrgNum = 0;
-    tSeqCfg.utCfg.tInd.un8SeqNum = 0;
-    tSeqCfg.utCfg.tInd.un8ChNum = 0;
-    tSeqCfg.utCfg.tInd.un8SamplingTime = 8;
-    eErr = HAL_ADC_SetSeqConfig(ADC_ID_0, &tSeqCfg);
     if (eErr != HAL_ERR_OK)
     {
         return;

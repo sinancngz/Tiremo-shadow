@@ -39,8 +39,8 @@ PROJECT_TARGET_APP:
   prmPeriList:
   - ADC
   - Timer1
-  - I2C
   - UART
+  - I2C
   prmAppUpdateComplete: true
 
 # Update if only user complete debug configuration

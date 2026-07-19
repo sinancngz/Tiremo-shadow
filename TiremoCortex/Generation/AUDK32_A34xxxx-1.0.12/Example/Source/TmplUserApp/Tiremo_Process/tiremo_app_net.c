@@ -12,11 +12,16 @@
 #include "../Tiremo/DebugLibrary/debug_framework.h"
 #include "../Tiremo/esp32/tiremo_esp32.h"
 #include "../Tiremo/led/tiremo_led.h"
+#include "../Tiremo/common/tiremo_systick.h"
 #include "../Mqtt_Library/EMPA_MqttAws.h"
 #include "../Mqtt_Library/mqtt_core.h"
 #include "../Mqtt_Library/mqtt_port.h"
 #include "../Mqtt_Library/cert_Lib/mqtt_cert_provision.h"
 #include "../Mqtt_Library/cert_Lib/mqtt_certs.h"
+
+#if (MQTT_SHADOW_ENABLE != 0)
+#include "tiremo_shadow.h"
+#endif
 
 extern void MqttPort_ABOV_Init(void);
 extern char mqttPacketBuffer[];
@@ -25,6 +30,10 @@ uint8_t TiremoAppNet_InitAndConnect(void)
 {
     uint8_t connected = 0U;
     uint8_t alreadyProvisioned;
+
+#if (MQTT_SHADOW_ENABLE != 0)
+    TiremoShadow_Init();
+#endif
 
     DebugFramework_PutsLine("\n\r========================================");
     DebugFramework_PutsLine("   ESP32 / MQTT / FLEET PROVISIONING");
@@ -104,6 +113,13 @@ uint8_t TiremoAppNet_InitAndConnect(void)
         DebugFramework_PutsLine("[MQTT] Ready to publish sensor data\n\r");
         DebugFramework_PutsLine("[MQTT] Client ID / topics use:");
         DebugFramework_PutsLine(MQTT_CLIENT_ID);
+
+#if (MQTT_SHADOW_ENABLE != 0)
+        if (TiremoShadow_OnConnected(mqttPacketBuffer, MQTT_DATA_PACKET_BUFF_SIZE) != 0)
+        {
+            DebugFramework_PutsLine("[SHADOW] WARN: shadow setup failed (telemetry continues)");
+        }
+#endif
     }
     else
     {
@@ -122,20 +138,40 @@ void TiremoAppNet_PublishCycle(const SensorData_t *pData,
         return;
     }
 
+#if (MQTT_SHADOW_ENABLE != 0)
+    if (*pConnected != 0U)
+    {
+        TiremoShadow_Poll(mqttPacketBuffer, MQTT_DATA_PACKET_BUFF_SIZE);
+    }
+#endif
+
     if (*pConnected != 0U)
     {
         DebugFramework_PutsLine("[MQTT] Data sending...");
         MQTT_PublishSensorData(pData);
         DebugFramework_Printf("[MQTT] Data sent! #%d\n\r", (*pDataCount)++);
+
+#if (MQTT_SHADOW_ENABLE != 0)
+        /* Catch delta that arrived during / right after publish AT exchange. */
+        TiremoShadow_Poll(mqttPacketBuffer, MQTT_DATA_PACKET_BUFF_SIZE);
+#endif
         return;
     }
 
+#if (MQTT_SHADOW_ENABLE == 0)
     TIREMO_LED_Off(TIREMO_LED_6);
     TIREMO_LED_Off(TIREMO_LED_7);
+#endif
 
     *pConnected = (MQTT_ConnectBroker() == 0) ? 1U : 0U;
     if (*pConnected != 0U)
     {
+#if (MQTT_SHADOW_ENABLE != 0)
+        if (TiremoShadow_OnConnected(mqttPacketBuffer, MQTT_DATA_PACKET_BUFF_SIZE) != 0)
+        {
+            DebugFramework_PutsLine("[SHADOW] WARN: shadow re-setup failed");
+        }
+#endif
         MQTT_PublishSensorData(pData);
     }
 }
@@ -161,6 +197,29 @@ void TiremoAppNet_PublishAlarms(const SensorData_t *pData,
         }
         MQTT_PublishAlarm(alarmBuf);
     }
+}
+
+uint32_t TiremoAppNet_GetPublishIntervalMs(void)
+{
+#if (MQTT_SHADOW_ENABLE != 0)
+    return TiremoShadow_GetPublishIntervalMs();
+#else
+    return APP_PUBLISH_INTERVAL_MS;
+#endif
+}
+
+void TiremoAppNet_IdleService(uint8_t connected, uint32_t durationMs)
+{
+#if (MQTT_SHADOW_ENABLE != 0)
+    if (connected != 0U)
+    {
+        TiremoShadow_ServiceForMs(mqttPacketBuffer, MQTT_DATA_PACKET_BUFF_SIZE,
+                                  durationMs);
+        return;
+    }
+#endif
+    (void)connected;
+    TIREMO_SysTick_DelayMs(durationMs);
 }
 
 #endif /* EMPA_ESP32_MQTT_AWS */

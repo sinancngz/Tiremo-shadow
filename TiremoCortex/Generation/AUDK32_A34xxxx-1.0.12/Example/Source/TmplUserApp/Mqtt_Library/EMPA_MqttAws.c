@@ -3,6 +3,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#if defined(EMPA_ESP32_MQTT_AWS) && (MQTT_SHADOW_ENABLE != 0)
+#include "../Tiremo_Process/tiremo_shadow.h"
+#endif
+
 MQTT_Config mqttConfig = {
     .mqttPacketBuffer = mqttPacketBuffer,
     .mode_wifi = STATION_MODE,
@@ -69,23 +73,34 @@ uint8_t MQTT_ConnectBrokerQuiet(void)
 void MQTT_PublishSensorData(const SensorData_t *pData)
 {
     static char jsonBuf[256];
+    char *topic = mqttConfig.pubtopic;
+
+#if defined(EMPA_ESP32_MQTT_AWS) && (MQTT_SHADOW_ENABLE != 0)
+    topic = (char *)TiremoShadow_GetPubTopic();
+#endif
 
     Sensor_FormatJSON(pData, jsonBuf, sizeof(jsonBuf));
 
     memset(mqttPacketBuffer, 0, MQTT_DATA_PACKET_BUFF_SIZE);
     LED_MqttTXBlink();
-    Wifi_MqttPubRaw2(mqttPacketBuffer, mqttConfig.pubtopic,
+    Wifi_MqttPubRaw2(mqttPacketBuffer, topic,
         (uint16_t)strlen(jsonBuf), jsonBuf, QOS_0, RTN_0, POLLING_MODE);
 }
 
 void MQTT_PublishAlarm(const char *jsonPayload)
 {
+    char *topic = (char *)MQTT_TOPIC_ALARM;
+
     if (jsonPayload == NULL)
         return;
 
+#if defined(EMPA_ESP32_MQTT_AWS) && (MQTT_SHADOW_ENABLE != 0)
+    topic = (char *)TiremoShadow_GetAlarmTopic();
+#endif
+
     memset(mqttPacketBuffer, 0, MQTT_DATA_PACKET_BUFF_SIZE);
     LED_MqttTXBlink();
-    Wifi_MqttPubRaw2(mqttPacketBuffer, MQTT_TOPIC_ALARM,
+    Wifi_MqttPubRaw2(mqttPacketBuffer, topic,
         (uint16_t)strlen(jsonPayload), jsonPayload, QOS_0, RTN_0, POLLING_MODE);
 }
 

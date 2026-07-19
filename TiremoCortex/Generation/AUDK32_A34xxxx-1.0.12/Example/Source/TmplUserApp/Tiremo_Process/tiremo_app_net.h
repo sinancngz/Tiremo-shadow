@@ -37,6 +37,16 @@ void TiremoAppNet_PublishAlarms(const SensorData_t *pData,
                                 uint8_t alarmCount,
                                 uint8_t connected);
 
+/**
+ * @brief  Shadow-aware publish interval (ms). Falls back to APP_PUBLISH_INTERVAL_MS.
+ */
+uint32_t TiremoAppNet_GetPublishIntervalMs(void);
+
+/**
+ * @brief  Idle between telemetry publishes: drain shadow UART (no blind DelayMs).
+ */
+void TiremoAppNet_IdleService(uint8_t connected, uint32_t durationMs);
+
 #endif /* EMPA_ESP32_MQTT_AWS */
 
 #endif /* TIREMO_APP_NET_H_ */

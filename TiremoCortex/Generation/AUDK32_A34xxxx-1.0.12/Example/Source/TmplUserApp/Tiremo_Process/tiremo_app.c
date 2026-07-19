@@ -175,6 +175,10 @@ void TiremoApp_Run(void)
         TiremoAppNet_PublishAlarms(pData, pendingAlarms, pendingAlarmCount, mqttConnected);
 #endif
 
+#if defined(EMPA_ESP32_MQTT_AWS)
+        TiremoAppNet_IdleService(mqttConnected, TiremoAppNet_GetPublishIntervalMs());
+#else
         TIREMO_SysTick_DelayMs(APP_PUBLISH_INTERVAL_MS);
+#endif
     }
 }

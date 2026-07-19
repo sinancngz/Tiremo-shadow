@@ -33,8 +33,8 @@ extern void PRV_SCU_CLK_Init(void);
 extern void PRV_USER_Code(void);
  
 /* >>> Placeholder for External Functions */
-extern void PRV_UART_Init(void);
 extern void PRV_I2C_Init(void);
+extern void PRV_UART_Init(void);
 extern void PRV_Timer1_Init(void);
 extern void PRV_ADC_Init(void);
 #if (CONFIG_DEBUG == 1)
@@ -75,8 +75,8 @@ int main(void)
 #endif
  
 /* >>> Placeholder for Initialization of Peripherals */
-    PRV_UART_Init();
     PRV_I2C_Init();
+    PRV_UART_Init();
     PRV_Timer1_Init();
     PRV_ADC_Init();
 /* <<< End of Placeholder */

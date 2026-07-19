@@ -53,6 +53,34 @@
 #define MQTT_FLEET_REGISTER_REJECTED    "$aws/provisioning-templates/tiremo-default/provision/json/rejected"
 
 /* =========================================================================
+ * DEVICE SHADOW (AWS IoT classic shadow — Device State Controller)
+ * Thing name = MQTT_CLIENT_ID (serial).
+ * ========================================================================= */
+
+#ifndef MQTT_SHADOW_ENABLE
+#define MQTT_SHADOW_ENABLE              1
+#endif
+
+#define MQTT_SHADOW_THING_NAME          MQTT_CLIENT_ID
+
+#define MQTT_SHADOW_TOPIC_UPDATE         "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/update"
+#define MQTT_SHADOW_TOPIC_DELTA         "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/update/delta"
+#define MQTT_SHADOW_TOPIC_UPD_ACCEPTED  "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/update/accepted"
+#define MQTT_SHADOW_TOPIC_UPD_REJECTED  "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/update/rejected"
+#define MQTT_SHADOW_TOPIC_GET           "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/get"
+#define MQTT_SHADOW_TOPIC_GET_ACCEPTED  "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/get/accepted"
+#define MQTT_SHADOW_TOPIC_GET_REJECTED  "$aws/things/" MQTT_SHADOW_THING_NAME "/shadow/get/rejected"
+
+/* Short UART listen after publish / between cycles (ms). */
+#define MQTT_SHADOW_POLL_MS             800U
+/* After shadow/get, keep listening this long for get/accepted or delta. */
+#define MQTT_SHADOW_GET_WAIT_MS         5000U
+/* Idle gap between telemetry: one continuous UART listen (do not split frames). */
+#define MQTT_SHADOW_IDLE_LISTEN_MS      2000U
+/* After +MQTTSUBRECV seen, wait this long with no bytes before parsing. */
+#define MQTT_SHADOW_SUBRECV_SILENCE_MS  1500U
+
+/* =========================================================================
  * TLS CERTIFICATES
  *   Bootstrap PEM: certificates/mqtt_certificate.inc + mqtt_private.inc
  *   Root CA:       certificates/mqtt_rootCA.inc
