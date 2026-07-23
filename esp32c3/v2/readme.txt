@@ -1,0 +1,1 @@
+tüm görevleri yapıor en base hali

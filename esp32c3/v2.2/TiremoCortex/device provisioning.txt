@@ -1,0 +1,244 @@
+What is Device Provisioning?
+In the world of IoT, Device Provisioning is the process of setting up a device to access the cloud securely. It transforms a generic piece of hardware into a trusted, managed, and identifiable device.
+
+It is not merely about connecting to the internet — it is about establishing a Chain of Trust.
+
+The Core Concept: The Digital Passport
+Think of an airport immigration system. A person cannot simply walk into a country; they need a unique Passport (Identity) and a Visa (Permission).
+
+IoT provisioning works the same way:
+
+Identity — Every device gets a unique digital certificate (X.509).
+Authentication — The platform verifies the device is who it claims to be.
+Authorization — The platform determines what the device is allowed to do (e.g., publish telemetry, receive commands).
+:::info Why not use passwords? In large IoT deployments, shared passwords or API keys are a security risk. If one device is compromised, the entire fleet is exposed. Each device instead gets its own unique cryptographic certificate — if one is revoked, nothing else is affected. :::
+
+The Provisioning Lifecycle
+Every device goes through the following stages:
+
+First-Time Setup
+
+Yes
+
+No
+
+Device Powers On
+
+Already
+Provisioned?
+
+Use Existing Device Certificate
+
+Connect with Bootstrap Certificate
+
+Request Permanent Certificate
+
+Platform Validates & Issues Certificate
+
+Device Receives Permanent Identity
+
+Store Certificate Securely
+
+Reconnect with Permanent Certificate
+
+Connect to Tiremo Platform
+
+✅ Device Active — Ready to Send Data
+
+Key Terms
+Term	Description
+Bootstrap Certificate	A shared certificate embedded in the device at manufacturing. Used only during the one-time provisioning step.
+Product Secret	A secret key tied to the product type. Used to authenticate the device's product during provisioning.
+Permanent Certificate	A unique certificate issued to each device after provisioning. Used for all subsequent connections.
+Device Shadow	A persistent JSON document in the cloud representing the device's desired and reported state.
+Serial Number	The device's unique identity on the platform: {productIdentifier}_{deviceIdentifier}.
+
+Phase 1: Prerequisites & Manufacturing Setup
+Before a device can provision itself, a platform administrator must create the Product in the dashboard. This is a one-time step per product type. Once done, the administrator provides the firmware team with everything needed to build provisioning into the device.
+
+What the Administrator Provides
+Item	Description	Where Used in Firmware
+Bootstrap Certificate	A shared PEM certificate for the product fleet	Used to make the initial provisioning connection
+Bootstrap Private Key	The private key paired with the bootstrap certificate	Used alongside the bootstrap certificate
+Product Secret	A secret string tied to the product	Sent as a provisioning parameter
+Product Identifier	A 12-character code for the product (e.g. hexasenshq5k)	Used to construct the device serial number
+MQTT Endpoint	iot.tiremo.ai	The host the device connects to
+Embedding Credentials in Firmware
+The bootstrap certificate and private key must be embedded securely in the device at manufacturing time. They are not the device's permanent identity — they are only used once, during the provisioning step, to authenticate the device to the platform and request a unique certificate.
+
+danger
+The bootstrap certificate is shared across the entire product fleet. It must never be exposed or transmitted outside the device. If it is compromised, contact the platform administrator immediately to rotate the product credentials.
+
+The Device Identifier
+Each individual device unit must have a device identifier — a unique alphanumeric string that distinguishes it from all other devices in the same product fleet (e.g., a serial number stamped at the factory).
+
+Requirements:
+
+Alphanumeric characters only — no spaces, hyphens, or special characters.
+Unique within the product.
+The device identifier is combined with the product identifier to form the device's serial number on the platform:
+
+serial number = {productIdentifier}_{deviceIdentifier}
+
+Example: hexasenshq5k_SN00123
+
+This serial number becomes the device's permanent identity for all platform operations.
+
+Phase 2: Fleet Provisioning
+Fleet provisioning is the automated process by which a device exchanges its shared bootstrap certificate for a unique, permanent certificate. This happens once — on the device's very first connection.
+
+Overview
+Tiremo Platform
+Device Firmware
+Tiremo Platform
+Device Firmware
+alt
+[Approved]
+[Rejected]
+1. Connect with bootstrap certificate
+2. Request new certificate
+certificateOwnershipToken + new certificate + private key
+3. Register device (send parameters + token)
+Validate parameters
+✅ Provisioning accepted
+Save permanent certificate & private key
+Reconnect with permanent certificate
+❌ Provisioning rejected
+Step 1 — Connect with the Bootstrap Certificate
+Establish an MQTT connection using the bootstrap certificate provided at manufacturing:
+
+Property	Value
+Host	iot.tiremo.ai
+Port	8883
+TLS	Required (MQTT over TLS)
+Certificate	Bootstrap certificate (PEM)
+Private Key	Bootstrap private key (PEM)
+Step 2 — Request a New Certificate
+Publish an empty JSON payload to request a new certificate and ownership token:
+
+Publish to:
+
+$aws/certificates/create/json
+
+Payload:
+
+{}
+
+Subscribe to the response topics before publishing:
+
+$aws/certificates/create/json/accepted
+$aws/certificates/create/json/rejected
+
+Accepted response contains:
+
+Field	Description
+certificateId	ID of the newly created certificate
+certificatePem	The device's permanent certificate (PEM)
+privateKey	The device's permanent private key (PEM)
+certificateOwnershipToken	Token required for the next step
+Step 3 — Register the Device
+Publish the registration request with the ownership token and your device parameters:
+
+Publish to:
+
+$aws/provisioning-templates/tiremo-default/provision/json
+
+Subscribe to the response topics before publishing:
+
+$aws/provisioning-templates/tiremo-default/provision/json/accepted
+$aws/provisioning-templates/tiremo-default/provision/json/rejected
+
+:::note Shared Template All products use the single shared provisioning template tiremo-default. The device identifies itself by sending productIdentifier as a parameter — the platform resolves the correct product, tenant, and thing type automatically. :::
+
+Payload:
+
+{
+  "certificateOwnershipToken": "<token from step 2>",
+  "parameters": {
+    "deviceIdentifier": "SN00123",
+    "productIdentifier": "hexasenshq5k",
+    "productSecret": "<product secret from administrator>",
+    "isGateway": "false",
+    "principalIdentifier": "home-smith-8k2f"
+  }
+}
+
+Parameters:
+
+Parameter	Type	Required	Description
+deviceIdentifier	String	Yes	Unique alphanumeric identifier for this device unit. No spaces or special characters.
+productIdentifier	String	Yes	Product identifier provided by the platform administrator (e.g. hexasenshq5k).
+productSecret	String	Yes	Product secret provided by the platform administrator.
+isGateway	String	Yes	"true" for gateway devices, "false" for regular devices.
+principalIdentifier	String	No	End-user principal identifier from your app. Auto-creates the principal if missing. See Principals.
+Accepted response:
+
+{
+  "deviceConfiguration": {},
+  "thingName": "hexasenshq5k_SN00123"
+}
+
+The thingName in the response is the device's serial number on the platform.
+
+Step 4 — Save Credentials and Reconnect
+After receiving the accepted response:
+
+Persist the permanent certificate and private key to secure, non-volatile storage on the device.
+Disconnect from the bootstrap connection.
+Reconnect to iot.tiremo.ai using the permanent certificate.
+danger
+The permanent private key must never leave the device. Store it in secure storage and never log or transmit it.
+
+Provisioning Rejection
+If the platform rejects the registration, the response is published to the rejected topic with an error code. Common reasons:
+
+Reason	Action
+Missing or invalid productIdentifier	Confirm the product identifier with the administrator
+Invalid productSecret	Verify the secret with the administrator
+productIdentifier and productSecret do not match	Both must correspond to the same registered product
+deviceIdentifier contains special characters	Use only alphanumeric characters
+Invalid isGateway value	Must be exactly "true" or "false"
+Certificate not registered for this product	Ensure you are using the bootstrap certificate provided for this product
+Tenant device limit reached	Contact the platform administrator
+
+Phase 3: First Connection & Normal Operation
+After provisioning, the device has its permanent certificate. From this point on, every connection uses that certificate — the bootstrap certificate is no longer needed.
+
+Connecting with the Permanent Certificate
+Property	Value
+Host	iot.tiremo.ai
+Port	8883
+TLS	Required
+Certificate	Permanent certificate received during provisioning
+Private Key	Permanent private key received during provisioning
+Client ID	The device's serial number: {productIdentifier}_{deviceIdentifier}
+What Changes After Provisioning
+On the first successful connection with the permanent certificate, the platform marks the device as Active in the dashboard. This is automatic — no additional message needs to be published by the device.
+
+Publishing Telemetry
+Once connected, the device can publish telemetry and alarms. When the device is registered under an end-user principal (see Principals), use the scoped topic:
+
+pub/{productIdentifier}/{principalIdentifier}/{deviceIdentifier}/telemetry
+pub/{productIdentifier}/{principalIdentifier}/{deviceIdentifier}/alarm
+
+Without a principal, devices may use the legacy path:
+
+pub/{productIdentifier}/{deviceIdentifier}/telemetry
+pub/{productIdentifier}/{deviceIdentifier}/alarm
+
+The principalIdentifier is stored as an AWS IoT Thing attribute at provisioning time. If a device is reassigned to another principal via the SDK, firmware should read the updated Thing attribute or shadow desired state and switch publish topics.
+
+The payload format is defined per product by the platform administrator. Refer to your product's data ingestion configuration for the expected schema.
+
+Firmware Checklist
+Before shipping, verify that the firmware:
+
+ Checks for existing permanent credentials on boot and skips provisioning if they exist.
+ Runs provisioning only when no permanent credentials are found.
+ Stores the permanent certificate and private key in secure, non-volatile storage.
+ Uses the serial number (thingName from the provisioning response) as the MQTT client ID.
+ Publishes to the principal-scoped MQTT topic when principalIdentifier is set on the Thing.
+ Handles shadow desired updates for principalIdentifier after SDK reassignment.
+ Never logs or exposes the private key.
+
+ 

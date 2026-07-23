@@ -1,0 +1,1 @@
+mqtt ye bağlanıp shadow alarm ve telemetry gönderioruz vekod sadece tiremoya göre ayarlandı
